@@ -6,7 +6,7 @@ import wave
 import sys
 import os
 import errno
-from numpy import short, array, chararray, frombuffer, log10
+from numpy import short, array, chararray, frombuffer, log10, zeros
 import traceback
 from tkinter import *
 from tkinter import ttk
@@ -49,28 +49,9 @@ start_minimized = 0
 rectime = .1
 rec_debounce_counter = 0
 timeout_time_sec = 120
-'''
-class Logger(object):
-	def __init__(self):
-		self.terminal = sys.stdout
-		self.logfilename = 'log.txt'
-		self.log = open(self.logfilename, "w")
-	def __del__(self):
-		self.log.close()
-	def write(self, message):
-		self.terminal.write(message)
-		self.log.write(message)
-		self.log.close()
-		self.log = open(self.logfilename, "a")
-		#log.close()
-	def flush(self):
-		self.terminal.flush()
-		#log = open(self.logfilename, "w")
-		self.log.flush()
-		#self.log.close()
+monitoring_active = False
+monitoring_thread = None
 
-sys.stdout = Logger()
-'''
 # determine if application is a script file or frozen exe
 if getattr(sys, 'frozen', False):
 	version = os.path.basename(sys.executable).split('.')[0]
@@ -121,115 +102,115 @@ try:
 except:
 	vox_silence_time = 2
 try:
-	RDIO_APIkey_config = config.get('Section1','RDIO_APIkey')
+	BCFY_APIurl_config = config.get('Section1','BCFY_APIurl')
 except:
-	RDIO_APIkey_config = ''
-try:
-	RDIO_APIurl_config = config.get('Section1','RDIO_APIurl')
-except:
-	RDIO_APIurl_config = ''
-try:
-	RDIO_system_config = config.get('Section1','RDIO_system')
-except:
-	RDIO_system_config = ''
-try:
-	RDIO_tg_config = config.get('Section1','RDIO_tg')
-except:
-	RDIO_tg_config = ''
-try:
-	OpenMHz_APIkey_config = config.get('Section1','openmhz_api_key')
-except:
-	OpenMHz_APIkey_config = ''
-try:
-	OpenMHz_ShortName_config = config.get('Section1','openmhz_short_name')
-except:
-	OpenMHz_ShortName_config = ''
-try:
-	OpenMHz_tgid_config = config.get('Section1','openmhz_tgid')
-except:
-	OpenMHz_tgid_config = ''
+	BCFY_APIurl_config = 'https://calls.cravenlive.com/index.php'
 
 try:
 	root = Tk()
 	if start_minimized==1:
 		root.iconify()
-	root.title('voxcall')
+	root.title('voxcall - Craven Live')
 except:
 	root = ''
 try:
 	root.iconbitmap('voxcall.ico')
+	# Also set the taskbar icon for Windows
+	if os.name == 'nt':  # Windows
+		import ctypes
+		myappid = 'voxcall.cravenlive.1.0'  # arbitrary string
+		ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
 except:
-	pass
+	try:
+		# Try alternative path
+		root.iconbitmap('./voxcall.ico')
+	except:
+		logger.warning("Could not load voxcall.ico")
+
+# Initialize variables before try block
+input_devices = []
+input_device_indices = {}
+inv_input_device_indices = {}
 
 try:
-	p = pyaudio.PyAudio()
-	#list of the names of the audio input and output devices
-	input_devices = []
-	input_device_indices = {}
+    p = pyaudio.PyAudio()
+    #list of the names of the audio input and output devices
 
-	#FIND THE AUDIO DEVICES ON THE SYSTEM
-	info = p.get_host_api_info_by_index(0)
-	numdevices = info.get('deviceCount')
+    #FIND THE AUDIO DEVICES ON THE SYSTEM
+    info = p.get_host_api_info_by_index(0)
+    numdevices = info.get('deviceCount')
 
-	#find index of pyaudio input and output devices
-	for i in range (0,numdevices):
-		if p.get_device_info_by_host_api_device_index(0,i).get('maxInputChannels')>0:
-			input_devices.append(p.get_device_info_by_host_api_device_index(0,i).get('name'))
-			input_device_indices[p.get_device_info_by_host_api_device_index(0,i).get('name')] = i
-			inv_input_device_indices = dict((v,k) for k,v in input_device_indices.items())
-	p.terminate()
+    #find index of pyaudio input and output devices
+    for i in range (0,numdevices):
+        if p.get_device_info_by_host_api_device_index(0,i).get('maxInputChannels')>0:
+            input_devices.append(p.get_device_info_by_host_api_device_index(0,i).get('name'))
+            input_device_indices[p.get_device_info_by_host_api_device_index(0,i).get('name')] = i
+    
+    # Create inverse mapping only if we found devices
+    if input_devices:
+        inv_input_device_indices = dict((v,k) for k,v in input_device_indices.items())
+    
+    p.terminate()
 except:
-	#exc_type, exc_value, exc_traceback = sys.exc_info()
-	#traceback.print_exception(exc_type, exc_value, exc_traceback,limit=2,file=sys.stdout)
-	logging.exception('Got exception on main handler')
+    logging.exception('Got exception on main handler')
+
+# Global flag to track if audio is available
+audio_available = len(input_devices) > 0
 
 if root != '':
-	record_threshold = IntVar()
-	record_threshold.set(record_threshold_config)
-	#make sure the record_threshold value is not zero to avoid math issues
-	if record_threshold.get() < 1:
-		record_threshold.set(1)
-	input_device = StringVar()
-	output_device = StringVar()
-	freqvar = StringVar()
-	statvar = StringVar()
-	statvar.set("Waiting For Audio")
-	BCFY_APIkey = StringVar()
-	BCFY_APIkey.set(BCFY_APIkey_config)
-	BCFY_SystemId = StringVar()
-	BCFY_SystemId.set(BCFY_SystemId_config)
-	BCFY_SlotId = StringVar()
-	BCFY_SlotId.set(BCFY_SlotId_config)
-	RadioFreq = StringVar()
-	RadioFreq.set(RadioFreq_config)
-	RDIO_APIkey = StringVar()
-	RDIO_APIkey.set(RDIO_APIkey_config)
-	RDIO_system = StringVar()
-	RDIO_system.set(RDIO_system_config)
-	RDIO_tg = StringVar()
-	RDIO_tg.set(RDIO_tg_config)
-	RDIO_APIurl = StringVar()
-	RDIO_APIurl.set(RDIO_APIurl_config)
-	OpenMHz_APIkey = StringVar()
-	OpenMHz_APIkey.set(OpenMHz_APIkey_config)
-	OpenMHz_ShortName = StringVar()
-	OpenMHz_ShortName.set(OpenMHz_ShortName_config)
-	OpenMHz_tgid = StringVar()
-	OpenMHz_tgid.set(OpenMHz_tgid_config)
-	saveaudio = IntVar()
-	saveaudio.set(saveaudio_config)
-	in_channel = StringVar()
-	in_channel.set(in_channel_config)
-	barvar = IntVar()
-	barvar.set(10)
-	input_device.set(inv_input_device_indices.get(audio_dev_index,input_devices[0]))
+    record_threshold = IntVar()
+    record_threshold.set(record_threshold_config)
+    #make sure the record_threshold value is not zero to avoid math issues
+    if record_threshold.get() < 1:
+        record_threshold.set(1)
+    input_device = StringVar()
+    output_device = StringVar()
+    freqvar = StringVar()
+    statvar = StringVar()
+    if audio_available:
+        statvar.set("Ready - Click Start Monitoring")
+    else:
+        statvar.set("NO AUDIO DEVICES FOUND")
+    BCFY_APIkey = StringVar()
+    BCFY_APIkey.set(BCFY_APIkey_config)
+    BCFY_SystemId = StringVar()
+    BCFY_SystemId.set(BCFY_SystemId_config)
+    BCFY_SlotId = StringVar()
+    BCFY_SlotId.set(BCFY_SlotId_config)
+    RadioFreq = StringVar()
+    RadioFreq.set(RadioFreq_config)
+    saveaudio = IntVar()
+    saveaudio.set(saveaudio_config)
+    in_channel = StringVar()
+    in_channel.set(in_channel_config)
+    barvar = IntVar()
+    barvar.set(10)
+    BCFY_APIurl = StringVar()
+    BCFY_APIurl.set(BCFY_APIurl_config)
+    
+    # Safe device selection - check if devices were found
+    if input_devices:
+        input_device.set(inv_input_device_indices.get(audio_dev_index,input_devices[0]))
+    else:
+        # Fallback if no audio devices detected
+        input_device.set("No devices found")
+        logger.error("No audio input devices found!")
 
 RATE = 22050
 chunk = 2205
 FORMAT = pyaudio.paInt16
+
+# Global recordstream variable
+recordstream = None
+
 def start_audio_stream():
 	global pr
 	global recordstream
+	
+	if not audio_available:
+		logger.error("Cannot start audio stream - no audio devices available")
+		return
+		
 	try:
 		pr = pyaudio.PyAudio()
 		CHANNELS = 1
@@ -240,6 +221,10 @@ def start_audio_stream():
 			if in_channel_config == 'left' or in_channel_config == 'right':
 				CHANNELS = 2
 		if root != '':
+			# Check if device is valid before using it
+			if input_device.get() not in input_device_indices:
+				logger.error(f"Invalid audio device: {input_device.get()}")
+				return
 			index = input_device_indices[input_device.get()]
 		else:
 			index = audio_dev_index
@@ -251,18 +236,24 @@ def start_audio_stream():
 					frames_per_buffer = chunk,
 					input_device_index = index,)
 	except:
-		#exc_type, exc_value, exc_traceback = sys.exc_info()
-		#traceback.print_exception(exc_type, exc_value, exc_traceback,limit=2,file=sys.stdout)
 		logging.exception('Got exception on main handler')
+		recordstream = None
 
-start_audio_stream()
+if audio_available:
+	start_audio_stream()
 
 def change_audio_input(junk):
-	recordstream.close()
-	pr.terminate()
+	if recordstream:
+		recordstream.close()
+	if pr:
+		pr.terminate()
 	start_audio_stream()
 	
 def record(seconds,channel='mono'):
+	if not recordstream:
+		# Return silence if no audio stream available
+		return zeros(int(RATE * seconds), dtype=short)
+		
 	alldata = bytearray()
 	for i in range(0, int(RATE / chunk * seconds)):
 		data = recordstream.read(chunk)
@@ -278,17 +269,16 @@ def record(seconds,channel='mono'):
 
 def heartbeat():
 	if (root != '' and BCFY_APIkey.get() != '') or (root == '' and BCFY_APIkey_config != ''):
-		if version.endswith('DEV'):
-			url = 'https://api.broadcastify.com/call-upload-dev'
-		else:
-			url = 'https://api.broadcastify.com/call-upload'
-		http = urllib3.PoolManager()
 		if root != '':
+			url = BCFY_APIurl.get()
 			apiKey = BCFY_APIkey.get()
 			systemId = BCFY_SystemId.get()
 		else:
+			url = BCFY_APIurl_config
 			apiKey = BCFY_APIkey_config
 			systemId = BCFY_SystemId_config
+		
+		http = urllib3.PoolManager()
 		r = http.request(
 			'POST',
 			url,
@@ -299,100 +289,35 @@ def heartbeat():
 		else:
 			logger.debug("heartbeat OK at " + str(time.time()))
 
-def upload_rdio(fname):
-	if root != '':
-		url = RDIO_APIurl.get()
-		key = RDIO_APIkey.get()
-		system = RDIO_system.get()
-		tg = RDIO_tg.get()
-	else:
-		url = RDIO_APIurl_config
-		key = RDIO_APIkey_config
-		system = RDIO_system_config
-		tg = RDIO_tg_config
-	if url != '' and key != '' and system != '' and tg != '':
+def upload(fname,duration):
+	if (root != '' and BCFY_APIkey.get() != '') or (root == '' and BCFY_APIkey_config != ''):
+		if root != '':
+			url = BCFY_APIurl.get()
+			apiKey = BCFY_APIkey.get()
+			systemId = BCFY_SystemId.get()
+			slotId = BCFY_SlotId.get()
+			freq = RadioFreq.get()
+		else:
+			url = BCFY_APIurl_config
+			apiKey = BCFY_APIkey_config
+			systemId = BCFY_SystemId_config
+			slotId = BCFY_SlotId_config
+			freq = RadioFreq_config
+			
 		http = urllib3.PoolManager()
-		f = open(fname,'rb')
-		audio_data = f.read()
-		f.close()
 		r = http.request(
 			'POST',
 			url,
-			fields={'key': key,'dateTime': datetime.datetime.utcnow().isoformat() + 'Z','system':str(system),'talkgroup':str(tg),'audio': (fname, audio_data, 'application/octet-stream')},
-			timeout=30)
-		if r.status != 200:
-			logger.debug("initial connect failed with status " + str(r.status))
-			logger.debug(r.data)
-		else:
-			logger.debug("upload to rdio-scanner OK")
-	else:
-		logger.info("No rdio-scanner config detected, skipping upload to rdio-scanner API")
-
-def upload_openmhz(fname, start_time, duration):
-	if root != '':
-		api_key = OpenMHz_APIkey.get()
-		short_name = OpenMHz_ShortName.get()
-		freq = float(RadioFreq.get())*1e6
-		tgid = OpenMHz_tgid.get()
-	else:
-		api_key = OpenMHz_APIkey_config
-		short_name = OpenMHz_ShortName_config
-		freq = float(RadioFreq_config)*1e6
-		tgid = OpenMHz_tgid_config
-
-	if not api_key or not short_name or not tgid or not freq:
-		logger.error("OpenMHz API Key, tgid, freq, or Short Name not found.")
-		return False
-
-	source_list = []
-	
-	http = urllib3.PoolManager()
-	url=f"https://api.openmhz.com/{short_name}/upload"
-	f = open(fname,'rb')
-	audio_data = f.read()
-	f.close()
-	r = http.request(
-		'POST',
-		url,
-		fields={
-			'call': (os.path.basename(fname), audio_data, 'application/octet-stream'),
-			'freq': str(freq),
-			'error_count': str(0),
-			'spike_count': str(0),
-			'start_time': str(start_time),
-			'stop_time': str(start_time + duration),
-			'call_length': str(duration),
-			'talkgroup_num': str(tgid),
-			'emergency': str(0),
-			'api_key': api_key,
-			'source_list': json.dumps(source_list)
-		},
-		timeout=30)
-	if r.status != 200:
-		logger.debug("initial connect failed with status " + str(r.status))
-		logger.debug(r.data)
-	else:
-		logger.debug("upload to OpenMHz OK")
-	
-	return True
-
-def upload(fname,duration):
-	if (root != '' and BCFY_APIkey.get() != '') or (root == '' and BCFY_APIkey_config != ''):
-		if version.endswith('DEV'):
-			url = 'https://api.broadcastify.com/call-upload-dev'
-		else:
-			url = 'https://api.broadcastify.com/call-upload'
-		http = urllib3.PoolManager()
-		if root != '':
-			r = http.request(
-				'POST',
-				url,
-				fields={'apiKey': BCFY_APIkey.get(),'systemId': BCFY_SystemId.get(),'callDuration': str(duration),'ts': fname.split('-')[0],'tg': BCFY_SlotId.get(),'src': '0','freq': RadioFreq.get(),'enc': 'mp3'})
-		else:
-			r = http.request(
-				'POST',
-				url,
-				fields={'apiKey': BCFY_APIkey_config,'systemId': BCFY_SystemId_config,'callDuration': str(duration),'ts': fname.split('-')[0],'tg': BCFY_SlotId_config,'src': '0','freq': RadioFreq_config,'enc': 'mp3'})
+			fields={
+				'apiKey': apiKey,
+				'systemId': systemId,
+				'callDuration': str(duration),
+				'ts': fname.split('-')[0],
+				'tg': slotId,
+				'src': '0',
+				'freq': freq,
+				'enc': 'mp3'
+			})
 
 		if r.status != 200:
 			logger.debug("initial connect failed with status " + str(r.status))
@@ -409,14 +334,14 @@ def upload(fname,duration):
 					'filefield': (fname, file_data, 'audio/mpeg'),
 				})
 				if r1.status == 200:
-					logger.debug("upload to BCFY OK")
+					logger.debug("upload to API OK")
 				else:
 					logger.debug("upload failed with status " + str(r1.status))
 					logger.debug(r1.data)
 			else:
 				logger.debug("error response from server: " + r.data.decode('utf-8'))
 	else:
-		logger.info("No BCFY config found, not attempting to upload there")
+		logger.info("No API config found, not attempting to upload")
 
 		
 def cleanup_audio_files(fname):
@@ -440,6 +365,14 @@ def cleanup_audio_files(fname):
 def start():
 	global rec_debounce_counter
 	last_API_attempt = 0
+	
+	if not audio_available:
+		logger.error("Cannot start - no audio devices available")
+		if root != '':
+			statvar.set("NO AUDIO DEVICES")
+			StatLabel.config(fg='red')
+		return
+	
 	#wait for audio to be present
 	counter = 0
 	while 1:
@@ -526,8 +459,6 @@ def start():
 			else:
 				data = data
 			duration = len(data)/float(RATE)
-			#convert back to binary to write to WAV later
-			#data = chararray.tostring(array(data))
 			data = chararray.tobytes(array(data))
 			# write data to WAVE file
 			fname = str(round(time.time())) + "-" + str(BCFY_SlotId.get()) + ".wav"
@@ -552,12 +483,8 @@ def start():
 				logger.debug("done converting to M4A " + time.strftime('%H:%M:%S on %m/%d/%y'))
 				os.remove(fname)
 			except:
-				#exc_type, exc_value, exc_traceback = sys.exc_info()
-				#traceback.print_exception(exc_type, exc_value, exc_traceback,limit=2,file=sys.stdout)
 				logging.exception('Got exception on main handler')
 			_thread.start_new_thread(upload,(fname.replace('.wav','.mp3'),duration))
-			_thread.start_new_thread(upload_rdio,(fname.replace('.wav','.mp3'),))
-			_thread.start_new_thread(upload_openmhz,(fname.replace('.wav','.m4a'),start_time,duration))
 			_thread.start_new_thread(cleanup_audio_files,(fname,))
 			last_API_attempt = time.time()
 			logger.debug("duration: " + str(duration) + " sec")
@@ -566,6 +493,26 @@ def start():
 				statvar.set("Waiting For Audio")
 				StatLabel.config(fg='blue')
 
+def start_monitoring():
+    global monitoring_active, monitoring_thread
+    if not monitoring_active and audio_available:
+        monitoring_active = True
+        statvar.set("Starting...")
+        monitoring_thread = _thread.start_new_thread(start, ())
+        statvar.set("Monitoring - Waiting For Audio")
+        StatLabel.config(fg='blue')
+        logger.info("Monitoring started")
+    elif not audio_available:
+        statvar.set("No Audio Devices!")
+        StatLabel.config(fg='red')
+
+def stop_monitoring():
+    global monitoring_active
+    monitoring_active = False
+    statvar.set("Stopped")
+    StatLabel.config(fg='red')
+    logger.info("Monitoring stopped")
+
 def saveconfigdata():
 	if root != '':
 		config = ConfigParser()
@@ -573,7 +520,14 @@ def saveconfigdata():
 		if 'Section1' not in config.sections():
 			config.add_section('Section1')
 		cfgfile = open('config.cfg','w')
-		config.set('Section1','audio_dev_index',str(input_device_indices[input_device.get()]))
+		
+		# Safe device index saving
+		if input_device.get() in input_device_indices:
+			config.set('Section1','audio_dev_index',str(input_device_indices[input_device.get()]))
+		else:
+			# Save the original index if current device is invalid
+			config.set('Section1','audio_dev_index',str(audio_dev_index))
+			
 		config.set('Section1','record_threshold',str(record_threshold.get()))
 		config.set('Section1','vox_silence_time',str(vox_silence_time))
 		config.set('Section1','in_channel',in_channel.get())
@@ -583,13 +537,7 @@ def saveconfigdata():
 		config.set('Section1','BCFY_SlotId',BCFY_SlotId.get())
 		config.set('Section1','saveaudio',str(saveaudio.get()))
 		config.set('Section1','vox_silence_time',str(vox_silence_time))
-		config.set('Section1','RDIO_APIkey',RDIO_APIkey.get())
-		config.set('Section1','RDIO_APIurl',RDIO_APIurl.get())
-		config.set('Section1','RDIO_system',RDIO_system.get())
-		config.set('Section1','RDIO_tg',RDIO_tg.get())
-		config.set('Section1','openmhz_api_key',OpenMHz_APIkey.get())
-		config.set('Section1','openmhz_short_name',OpenMHz_ShortName.get())
-		config.set('Section1','openmhz_tgid',OpenMHz_tgid.get())
+		config.set('Section1','BCFY_APIurl',BCFY_APIurl.get())
 		config.write(cfgfile)
 		cfgfile.close()
 		root.destroy()
@@ -607,9 +555,18 @@ if root != '':
 
 	StatLabel = Label(f,textvar = statvar,font=("Helvetica", 12))
 	StatLabel.grid(row = 1, column = 1,columnspan = 4,sticky = W)
-	StatLabel.config(fg='blue')
+	if audio_available:
+		StatLabel.config(fg='blue')
+	else:
+		StatLabel.config(fg='red')
+		
 	Label(f, text="Audio Input Device:").grid(row = 3, column = 0,sticky = E)
-	OptionMenu(f,input_device,*input_devices,command = change_audio_input).grid(row = 3,column = 1,columnspan = 4,sticky = E+W)
+	if input_devices:
+		OptionMenu(f, input_device, input_device.get(), *input_devices, command=change_audio_input).grid(row=3, column=1, columnspan=4, sticky=E+W)
+	else:
+		# Show disabled menu if no devices
+		OptionMenu(f, input_device, "No devices found").grid(row=3, column=1, columnspan=4, sticky=E+W)
+		
 	Label(f,text = 'Audio Input Channel').grid(row = 5,column = 0,sticky=E)
 	audiochannellist = OptionMenu(f,in_channel,"mono","left","right")
 	audiochannellist.config(width=20)
@@ -622,52 +579,4 @@ if root != '':
 	Label(f,text='Save Audio Files:').grid(row=8,column=0,sticky=E)
 	Checkbutton(f,text = '',variable = saveaudio).grid(row = 8, column = 1,sticky=W)
 	
-	Label(f,text='Broadcastify Settings').grid(row=9,column=1,sticky = W)
-	Label(f,text='Broadcastify API Key:').grid(row=10,column=0,sticky = E)
-	BCFY_APIkey_Entry = Entry(f,width=40,textvariable = BCFY_APIkey)
-	BCFY_APIkey_Entry.grid(row = 10, column = 1,columnspan = 4,sticky=W)
-	Label(f,text='Broadcastify System ID:').grid(row=11,column=0,sticky = E)
-	BCFY_SystemId_Entry = Entry(f,width=20,validate='key',validatecommand=vcmd,textvariable = BCFY_SystemId)
-	BCFY_SystemId_Entry.grid(row = 11, column = 1,sticky=W)
-	Label(f,text='Broadcastify Slot ID:').grid(row=12,column=0,sticky = E)
-	BCFY_SlotId_Entry = Entry(f,width=20,validate='key',validatecommand=vcmd,textvariable = BCFY_SlotId)
-	BCFY_SlotId_Entry.grid(row = 12, column = 1,sticky=W)
-
-	Label(f,text='rdio-scanner settings').grid(row=19,column=1,sticky = W)
-	Label(f,text='rdio-scanner url:').grid(row=20,column=0,sticky = E)
-	RDIO_APIurl_Entry = Entry(f,width=40,textvariable = RDIO_APIurl)
-	RDIO_APIurl_Entry.grid(row = 20, column = 1,sticky=W)
-	Label(f,text='rdio-scanner API Key:').grid(row=21,column=0,sticky = E)
-	RDIO_APIkey_Entry = Entry(f,width=40,textvariable = RDIO_APIkey)
-	RDIO_APIkey_Entry.grid(row = 21, column = 1,columnspan = 4,sticky=W)
-	Label(f,text='rdio-scanner System ID:').grid(row=22,column=0,sticky = E)
-	RDIO_system_Entry = Entry(f,width=20,validate='key',validatecommand=vcmd,textvariable = RDIO_system)
-	RDIO_system_Entry.grid(row = 22, column = 1,sticky=W)
-	Label(f,text='rdio-scanner TG ID:').grid(row=23,column=0,sticky = E)
-	RDIO_tg_Entry = Entry(f,width=20,validate='key',validatecommand=vcmd,textvariable = RDIO_tg)
-	RDIO_tg_Entry.grid(row = 23, column = 1,sticky=W)
-	
-	Label(f,text='OpenMHz settings').grid(row=25,column=1,sticky = W)
-	Label(f,text='OpenMHz API Key:').grid(row=26,column=0,sticky = E)
-	OpenMhz_key_Entry = Entry(f,width=40,textvariable = OpenMHz_APIkey)
-	OpenMhz_key_Entry.grid(row = 26, column = 1,columnspan = 4,sticky=W)
-	Label(f,text='OpenMHz System ShortName').grid(row=27,column=0,sticky = E)
-	OpenMHz_ShortName_Entry = Entry(f,width=20, textvariable = OpenMHz_ShortName)
-	OpenMHz_ShortName_Entry.grid(row = 27, column = 1,sticky=W)
-	Label(f,text='OpenMHz TG/Channel ID:').grid(row=28,column=0,sticky = E)
-	OpenMHz_tgid_Entry = Entry(f,width=20,validate='key',validatecommand=vcmd,textvariable = OpenMHz_tgid)
-	OpenMHz_tgid_Entry.grid(row = 28, column = 1,sticky=W)
-	
-	Button(f, text = "Save & Exit",command = saveconfigdata,width=20).grid(row = 30,column = 1,columnspan = 1,sticky=W)
-	
-	squelchbar = Scale(f,from_ = 100, to = 0,length = 150,sliderlength = 8,showvalue = 0,variable = record_threshold,orient = 'vertical').grid(row = 17,rowspan=8,column = 7,columnspan = 1)
-	ttk.Progressbar(f,orient ='vertical',variable = barvar,length = 150).grid(row = 17,rowspan = 8,column = 8,columnspan = 1)
-	Label(f,text='Audio\n Squelch').grid(row=25,column=7)
-	Label(f,text='Audio\n Level').grid(row=25,column=8)
-	
-
-if root != '':
-	_thread.start_new_thread(start,())
-	root.mainloop()
-else:
-	start()
+	Label(f,text='API Settings').grid(row=9,column=1,sticky = 
