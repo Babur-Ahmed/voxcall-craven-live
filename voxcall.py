@@ -113,19 +113,17 @@ try:
 	root.title('voxcall - Craven Live')
 except:
 	root = ''
+
+icon_path = os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(__file__)), "voxcall.ico")
 try:
-	root.iconbitmap('voxcall.ico')
+	root.iconbitmap(icon_path)
 	# Also set the taskbar icon for Windows
 	if os.name == 'nt':  # Windows
 		import ctypes
 		myappid = 'voxcall.cravenlive.1.0'  # arbitrary string
 		ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
 except:
-	try:
-		# Try alternative path
-		root.iconbitmap('./voxcall.ico')
-	except:
-		logger.warning("Could not load voxcall.ico")
+	logger.warning("Could not load voxcall.ico")
 
 # Initialize variables before try block
 input_devices = []
@@ -579,4 +577,42 @@ if root != '':
 	Label(f,text='Save Audio Files:').grid(row=8,column=0,sticky=E)
 	Checkbutton(f,text = '',variable = saveaudio).grid(row = 8, column = 1,sticky=W)
 	
-	Label(f,text='API Settings').grid(row=9,column=1,sticky = 
+	Label(f,text='API Settings').grid(row=9,column=1,sticky = W)
+	Label(f,text='API URL:').grid(row=10,column=0,sticky = E)
+	BCFY_APIurl_Entry = Entry(f,width=40,textvariable = BCFY_APIurl)
+	BCFY_APIurl_Entry.grid(row = 10, column = 1,columnspan = 4,sticky=W)
+	Label(f,text='API Key:').grid(row=11,column=0,sticky = E)
+	BCFY_APIkey_Entry = Entry(f,width=40,textvariable = BCFY_APIkey)
+	BCFY_APIkey_Entry.grid(row = 11, column = 1,columnspan = 4,sticky=W)
+	Label(f,text='System ID:').grid(row=12,column=0,sticky = E)
+	BCFY_SystemId_Entry = Entry(f,width=20,validate='key',validatecommand=vcmd,textvariable = BCFY_SystemId)
+	BCFY_SystemId_Entry.grid(row = 12, column = 1,sticky=W)
+	Label(f,text='Slot ID:').grid(row=13,column=0,sticky = E)
+	BCFY_SlotId_Entry = Entry(f,width=20,validate='key',validatecommand=vcmd,textvariable = BCFY_SlotId)
+	BCFY_SlotId_Entry.grid(row = 13, column = 1,sticky=W)
+
+	Button(f, text="Save Config", command=saveconfigdata, width=15).grid(row=30, column=0, sticky=W)
+	Button(f, text="Start Monitoring", command=start_monitoring, width=15).grid(row=30, column=1, sticky=W)
+	Button(f, text="Stop Monitoring", command=stop_monitoring, width=15).grid(row=30, column=2, sticky=W)
+
+	squelchbar = Scale(f,from_ = 100, to = 0,length = 150,sliderlength = 8,showvalue = 0,variable = record_threshold,orient = 'vertical').grid(row = 17,rowspan=8,column = 7,columnspan = 1)
+	ttk.Progressbar(f,orient ='vertical',variable = barvar,length = 150).grid(row = 17,rowspan = 8,column = 8,columnspan = 1)
+	Label(f,text='Audio\n Squelch').grid(row=25,column=7)
+	Label(f,text='Audio\n Level').grid(row=25,column=8)
+	
+
+if root != '':
+    # Don't start automatically - wait for user to click "Start Monitoring"
+    if audio_available:
+        statvar.set("Ready - Click Start Monitoring")
+        StatLabel.config(fg='green')
+    else:
+        statvar.set("NO AUDIO DEVICES FOUND")
+        StatLabel.config(fg='red')
+    root.mainloop()
+else:
+    # Command line mode - start automatically
+    if audio_available:
+        start()
+    else:
+        logger.error("Application started but no audio devices available")
